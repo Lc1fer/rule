@@ -1,0 +1,84 @@
+# Install this workflow at .github/workflows/txt-json-binary.yml.
+name: TXT-JSON-Binary
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths:
+      - 'Rule/direct.txt'
+      - 'Rule/fix.txt'
+      - 'Rule/proxy.txt'
+      - 'Rule/reject.txt'
+      - 'Script/convert_txt_to_json.py'
+      - 'Script/txt-json-binary.yml'
+      - '.github/workflows/txt-json-binary.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: txt-json-binary-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  convert_and_compile:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout current branch
+        uses: actions/checkout@v7
+        with:
+          # Queued runs should build the latest rules on this branch.
+          ref: ${{ github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Convert four TXT files to JSON and SRS
+        run: |
+          set -euo pipefail
+          build_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$build_dir"' EXIT
+
+          # sing-box has no USER-AGENT equivalent; omission is explicit and logged.
+          python Script/convert_txt_to_json.py --skip-unsupported-type USER-AGENT --output-dir "$build_dir"
+
+          for name in direct fix proxy reject; do
+            test -s "$build_dir/$name.json"
+            test -s "$build_dir/$name.srs"
+          done
+
+          # Publish outputs only after all eight files are generated successfully.
+          for name in direct fix proxy reject; do
+            cp -- "$build_dir/$name.json" "Rule/$name.json"
+            cp -- "$build_dir/$name.srs" "Rule/$name.srs"
+          done
+
+      - name: Commit changed JSON and SRS together
+        env:
+          TARGET_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          for name in direct fix proxy reject; do
+            git add -- "Rule/$name.json" "Rule/$name.srs"
+          done
+
+          if git diff --cached --quiet; then
+            echo "No rule output changes."
+            exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Update JSON and SRS rule sets'
+          # Fail safely if the branch changed during compilation; never force push
+          # or rebase old generated output onto newer source rules.
+          git push origin "HEAD:$TARGET_REF"
