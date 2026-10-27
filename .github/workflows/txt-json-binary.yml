@@ -1,18 +1,8 @@
-# Install this workflow at .github/workflows/txt-json-binary.yml.
+# Run manually from the GitHub Actions page.
 name: TXT-JSON-Binary
 
 on:
   workflow_dispatch:
-  push:
-    branches: ['main']
-    paths:
-      - 'direct.txt'
-      - 'fix.txt'
-      - 'proxy.txt'
-      - 'reject.txt'
-      - 'script/convert_txt_to_json.py'
-      - 'script/txt-json-binary.yml'
-      - '.github/workflows/txt-json-binary.yml'
 
 permissions:
   contents: write

@@ -40,7 +40,7 @@ direct:
 
 ## 转换为 sing-box JSON / SRS
 
-[转换脚本](script/convert_txt_to_json.py) 仅依赖 Python 3 标准库，不需要安装 sing-box 或第三方 Python 包。可使用 Python 3.13，与工作流模板保持一致。
+[转换脚本](script/convert_txt_to_json.py) 仅依赖 Python 3 标准库，不需要安装 sing-box 或第三方 Python 包。可使用 Python 3.13，与工作流保持一致。
 
 ```bash
 python3 script/convert_txt_to_json.py --skip-unsupported-type USER-AGENT
@@ -79,23 +79,21 @@ python3 script/convert_txt_to_json.py \
 - 使用 Node.js 24 生成规则，仅提交根目录有变化的 TXT 文件。
 - 下载部分失败时仍尝试提交其他分类的更新，随后将工作流标记为失败。
 
-### 可选模板：TXT-JSON-Binary
+### 仅手动运行：TXT-JSON-Binary
 
-[script/txt-json-binary.yml](script/txt-json-binary.yml) 当前只是模板，尚未放入 `.github/workflows/`，不会自动运行。需要启用时：
+[.github/workflows/txt-json-binary.yml](.github/workflows/txt-json-binary.yml) 仅保留 `workflow_dispatch`，不会因推送或定时任务自动运行。
 
-```bash
-cp script/txt-json-binary.yml .github/workflows/txt-json-binary.yml
-```
+需要转换时，在 GitHub 仓库的 **Actions → TXT-JSON-Binary → Run workflow** 中选择分支并手动运行。
 
-提交该工作流后，可手动运行或在匹配的 TXT、转换脚本及工作流文件推送到 `main` 时触发。模板使用 Python 3.13，检查八份输出均已生成且非空后，一起提交 JSON / SRS 文件。运行时需要仓库内容写入权限。
-
-由其他工作流使用默认 `GITHUB_TOKEN` 推送的提交通常不会触发后续 push 工作流；如需在定时合并后执行转换，可在合并流程中增加转换步骤或配置独立触发方式。
+工作流使用 Python 3.13，检查八份输出均已生成且非空后，一起提交 JSON / SRS 文件到所选分支。运行时需要仓库内容写入权限。
 
 ## 仓库结构
 
 ```text
 .
-├── .github/workflows/merge-rules.yml  # 已启用的规则合并工作流
+├── .github/workflows/
+│   ├── merge-rules.yml              # 已启用的规则合并工作流
+│   └── txt-json-binary.yml          # 仅手动运行的转换工作流
 ├── merge.yaml                       # 上游来源与自定义规则
 ├── direct.txt / fix.txt / proxy.txt / reject.txt / us.txt
 ├── lan.txt                          # 本地维护的 LAN / 保留地址规则
@@ -103,7 +101,6 @@ cp script/txt-json-binary.yml .github/workflows/txt-json-binary.yml
     ├── merge-rules.js                # 下载、合并并生成 TXT
     ├── convert_txt_to_json.py        # TXT 转 JSON / SRS
     ├── convert_txt_to_json.md        # 转换脚本详细说明
-    ├── txt-json-binary.yml           # 转换工作流模板
     └── boxjs.json                   # yuheng 脚本的 BoxJS 订阅配置
 ```
 
