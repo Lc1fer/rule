@@ -8,7 +8,13 @@ const { setTimeout: sleep } = require('node:timers/promises');
 // 自动清理未在配置中保留的直属 TXT 文件：true 启用，false 关闭。
 const CLEANUP_ENABLED = false;
 
-const OPTIONS = Object.freeze({ concurrency: 4, attempts: 3, timeoutMs: 60_000, retryMs: 2_000 });
+const DEFAULT_OPTIONS = Object.freeze({
+  concurrency: 4,
+  attempts: 3,
+  timeoutMs: 60_000,
+  retryMs: 2_000,
+});
+const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 const DEFAULT_OUTPUT_DIR = path.resolve(__dirname, '..');
@@ -95,8 +101,11 @@ function resolveOptions(options = {}) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     throw new Error('Invalid options: use an object');
   }
-  const settings = { ...OPTIONS, ...options };
-  for (const key of Object.keys(OPTIONS)) {
+  for (const key of Object.keys(options)) {
+    if (!Object.hasOwn(DEFAULT_OPTIONS, key)) throw new Error(`Unknown option: ${key}`);
+  }
+  const settings = { ...DEFAULT_OPTIONS, ...options };
+  for (const key of Object.keys(DEFAULT_OPTIONS)) {
     if (!Number.isSafeInteger(settings[key]) || settings[key] < 1 ||
         ((key === 'timeoutMs' || key === 'retryMs') && settings[key] > MAX_TIMER_MS)) {
       throw new Error(`Invalid option: ${key}`);
@@ -105,37 +114,51 @@ function resolveOptions(options = {}) {
   return settings;
 }
 
+class DownloadError extends Error {
+  constructor(message, { retryable = false, cause } = {}) {
+    super(message, { cause });
+    this.name = 'DownloadError';
+    this.retryable = retryable;
+  }
+}
+
+// Keep the timeout active until the body has been fully read, not just the headers.
+async function fetchRules(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      redirect: 'follow', signal: controller.signal,
+      headers: { 'User-Agent': 'GitHub-Actions-Rule-Merger' },
+    });
+    if (!response.ok) {
+      // A stalled cancellation must not block this worker or the next retry.
+      try { response.body?.cancel().catch(() => {}); } catch {}
+      controller.abort();
+      throw new DownloadError(`HTTP ${response.status} ${response.statusText}`, {
+        retryable: RETRYABLE_HTTP_STATUSES.has(response.status) || response.status >= 500,
+      });
+    }
+    const bytes = await response.arrayBuffer();
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch (cause) { throw new DownloadError('Response is not valid UTF-8', { cause }); }
+    return addRules(new Set(), text);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function download(url, options = {}) {
   const settings = resolveOptions(options);
   for (let attempt = 1; attempt <= settings.attempts; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
-    let failure;
-    let retryable = true;
-    try {
-      const response = await fetch(url, {
-        redirect: 'follow', signal: controller.signal,
-        headers: { 'User-Agent': 'GitHub-Actions-Rule-Merger' },
-      });
-      if (!response.ok) {
-        retryable = [408, 429].includes(response.status) || response.status >= 500;
-        // A stalled cancellation must not block this worker or the next retry.
-        try { response.body?.cancel().catch(() => {}); } catch {}
-        controller.abort();
-        throw new Error(`HTTP ${response.status} ${response.statusText}`);
-      }
-      // Reject corrupt UTF-8 instead of publishing replacement characters as rules.
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(await response.arrayBuffer());
-      return addRules(new Set(), text);
-    } catch (error) {
-      failure = error;
-    } finally {
-      clearTimeout(timer);
+    try { return await fetchRules(url, settings.timeoutMs); }
+    catch (error) {
+      if (attempt === settings.attempts || (error instanceof DownloadError && !error.retryable)) throw error;
+      console.warn(`Retry ${attempt}/${settings.attempts - 1}: ${url} (${error.message})`);
+      // Node.js otherwise turns overflowing delays into a 1 ms timer.
+      await sleep(Math.min(settings.retryMs * 2 ** (attempt - 1), MAX_TIMER_MS));
     }
-    if (!retryable || attempt === settings.attempts) throw failure;
-    console.warn(`Retry ${attempt}/${settings.attempts - 1}: ${url} (${failure.message})`);
-    // Node.js otherwise turns overflowing delays into a 1 ms timer.
-    await sleep(Math.min(settings.retryMs * 2 ** (attempt - 1), MAX_TIMER_MS));
   }
 }
 
@@ -174,27 +197,32 @@ async function atomicWrite(output, content) {
   }
 }
 
-async function generateRule(name, config, downloads, outputDir) {
-  const output = path.join(outputDir, `${name}.txt`);
-  if (!config.url.length && !config.rules.add.length) return 'skipped';
+function collectRules(config, downloads) {
   let rules = new Set();
   for (const url of config.url) {
     const result = downloads.get(url);
     if (result.error) {
-      console.error(`FAILED: ${name}: ${url}: ${result.error.message}; original file preserved`);
-      return 'failed';
+      throw new Error(`${url}: ${result.error.message}`, { cause: result.error });
     }
     // The last category can take ownership; sources still used later stay unchanged.
     if (!rules.size && result.remainingUsers === 1) rules = result.rules;
     else for (const rule of result.rules) rules.add(rule);
   }
-  for (const rule of config.rules.add) addRules(rules, rule);
+  // Configuration values are already single-line, trimmed rules from parseConfig.
+  for (const rule of config.rules.add) rules.add(rule);
+  return rules;
+}
+
+async function generateRule(name, config, downloads, outputDir) {
+  if (!config.url.length && !config.rules.add.length) return 'skipped';
+  const output = path.join(outputDir, `${name}.txt`);
+  const rules = collectRules(config, downloads);
   if (!rules.size) {
     console.warn(`SKIP: ${name} generated no rules; original file preserved`);
     return 'skipped';
   }
   // Apply removals last so they override both downloaded and added rules.
-  for (const rule of addRules(new Set(), config.rules.remove.join('\n'))) rules.delete(rule);
+  for (const rule of config.rules.remove) rules.delete(rule);
   let oldText;
   try { oldText = await fs.readFile(output, 'utf8'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -281,6 +309,15 @@ function releaseDownloads(config, downloads) {
   }
 }
 
+async function readConfig(configFile) {
+  const bytes = await fs.readFile(configFile);
+  try {
+    return parseConfig(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch (cause) {
+    throw new Error(`${configFile}: ${cause.message}`, { cause });
+  }
+}
+
 async function main({
   configFile = path.join(DEFAULT_OUTPUT_DIR, 'merge.yaml'),
   outputDir = DEFAULT_OUTPUT_DIR,
@@ -289,7 +326,7 @@ async function main({
 } = {}) {
   if (typeof cleanupEnabled !== 'boolean') throw new Error('Invalid option: cleanupEnabled; use true or false');
   const settings = resolveOptions(options);
-  const config = parseConfig(await fs.readFile(configFile, 'utf8'));
+  const config = await readConfig(configFile);
   await fs.mkdir(outputDir, { recursive: true });
   const resolvedPaths = await resolveFilePaths(outputDir, configFile);
   assertSafeOutputs(config, resolvedPaths.realOutputDir, resolvedPaths.protectedPaths);
@@ -306,16 +343,18 @@ async function main({
     try { summary[await generateRule(name, item, downloads, resolvedPaths.realOutputDir)]++; }
     catch (error) {
       summary.failed++;
-      console.error(`FAILED: ${name}: ${error.message}`);
+      console.error(`FAILED: ${name}: ${error.message}; original file preserved`);
     } finally {
       releaseDownloads(item, downloads);
     }
   }
   try {
-    if (cleanupEnabled) {
-      summary.deleted = await cleanupObsoleteFiles(config, resolvedPaths.realOutputDir, configFile, resolvedPaths);
-    } else {
+    if (!cleanupEnabled) {
       console.log('CLEANUP DISABLED: obsolete TXT files preserved');
+    } else if (summary.failed) {
+      console.warn('CLEANUP SKIPPED: generation failed; obsolete TXT files preserved');
+    } else {
+      summary.deleted = await cleanupObsoleteFiles(config, resolvedPaths.realOutputDir, configFile, resolvedPaths);
     }
   } finally {
     // Keep completed generation results visible even when directory cleanup fails.
