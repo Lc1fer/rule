@@ -23,6 +23,16 @@ RULE_TYPES = {
     "PROCESS-NAME": "process_name",
 }
 SRS_VERSION = 1
+# Wire tags from sing-box's common/srs/binary.go; independent of TXT rule names.
+SRS_RULE_DEFAULT = 0
+SRS_ITEM_DOMAIN = 2
+SRS_ITEM_DOMAIN_KEYWORD = 3
+SRS_ITEM_IP_CIDR = 6
+SRS_ITEM_PROCESS_NAME = 11
+SRS_ITEM_FINAL = 0xFF
+# Keep this explicit: adding a TXT field must not silently bypass its SRS encoder.
+SRS_SUPPORTED_FIELDS = frozenset({"domain", "domain_suffix", "domain_keyword", "ip_cidr", "process_name"})
+SKIPPABLE_TYPES = frozenset({"USER-AGENT"})
 TRAILING_COMMENT = re.compile(r"\s+(?://|#|;)")
 
 
@@ -38,6 +48,13 @@ def uvarint(value):
 
 def sized_bytes(value):
     return uvarint(len(value)) + value
+
+
+def append_string_list(buffer, values):
+    """Append an SRS length-prefixed list of UTF-8 strings without an extra buffer."""
+    buffer.extend(uvarint(len(values)))
+    for value in values:
+        buffer.extend(sized_bytes(value.encode("utf-8")))
 
 
 def encode_domain_matcher(domains, suffixes):
@@ -155,40 +172,64 @@ def encode_srs(rules):
     Layout: SagerNet/sing-box v1.12.0 common/srs/binary.go.
     Keep the version fixed; new rule types require explicit encoder support.
     """
-    unsupported = rules.keys() - set(RULE_TYPES.values())
+    unsupported = rules.keys() - SRS_SUPPORTED_FIELDS
     if unsupported:
         raise ValueError(f"unsupported SRS fields: {', '.join(sorted(unsupported))}")
     groups = rule_groups(rules)
     payload = bytearray(uvarint(len(groups)))
     for group in groups:
-        payload.append(0)  # Default (non-logical) rule.
+        payload.append(SRS_RULE_DEFAULT)
         if group.get("domain") or group.get("domain_suffix"):
-            payload.append(2)
+            payload.append(SRS_ITEM_DOMAIN)
             payload.extend(encode_domain_matcher(group.get("domain", []), group.get("domain_suffix", [])))
         if group.get("domain_keyword"):
-            keywords = group["domain_keyword"]
-            payload.append(3)
-            payload.extend(uvarint(len(keywords)))
-            for keyword in keywords:
-                payload.extend(sized_bytes(keyword.encode("utf-8")))
+            payload.append(SRS_ITEM_DOMAIN_KEYWORD)
+            append_string_list(payload, group["domain_keyword"])
         if group.get("ip_cidr"):
-            payload.append(6)
+            payload.append(SRS_ITEM_IP_CIDR)
             payload.extend(encode_ip_set(group["ip_cidr"]))
         if group.get("process_name"):
-            names = group["process_name"]
-            payload.append(11)  # ruleItemProcessName in sing-box's SRS format.
-            payload.extend(uvarint(len(names)))
-            for name in names:
-                payload.extend(sized_bytes(name.encode("utf-8")))
-        payload.extend(b"\xff\x00")  # End of items, invert=false.
+            payload.append(SRS_ITEM_PROCESS_NAME)
+            append_string_list(payload, group["process_name"])
+        payload.extend((SRS_ITEM_FINAL, 0))  # End of items, invert=false.
     return b"SRS" + bytes([SRS_VERSION]) + zlib.compress(payload, level=9)
+
+
+def parse_rule(line, skipped_types):
+    """Validate one uncommented rule; return its type/value, or None for GEOIP."""
+    parts = [part.strip() for part in line.split(",")]
+    key = parts[0].upper()
+    # Keep GEOIP in the source TXT, but omit it from JSON and SRS.
+    if key == "GEOIP":
+        return None
+    if key not in RULE_TYPES and key not in skipped_types:
+        raise ValueError(f"unsupported rule type: {parts[0]}")
+    if len(parts) < 2 or not parts[1]:
+        raise ValueError("missing rule value")
+    is_ip = key in ("IP-CIDR", "IP-CIDR6")
+    if len(parts) != 2 and not (
+        is_ip and len(parts) == 3 and parts[2].lower() == "no-resolve"
+    ):
+        raise ValueError("unexpected extra fields (only IP no-resolve is supported)")
+    value = parts[1]
+    if key in skipped_types:
+        return key, value
+    if key != "PROCESS-NAME" and any(character.isspace() for character in value):
+        raise ValueError("whitespace inside rule value")
+    if is_ip:
+        network = parse_ip_network(value, strict=False)
+        expected_version = 6 if key == "IP-CIDR6" else 4
+        if network.version != expected_version:
+            raise ValueError(f"IP version does not match {key}")
+        value = str(network)
+    return key, value
 
 
 def process_file(txt_path, *, skip_unsupported_types=()):
     """Skip GEOIP during conversion; validate and deduplicate other rules."""
     txt_path = Path(txt_path)
     skipped_types = {key.upper() for key in skip_unsupported_types}
-    if skipped_types - {"USER-AGENT"}:
+    if skipped_types - SKIPPABLE_TYPES:
         raise ValueError("only USER-AGENT can be explicitly skipped")
     skipped = {}
     rules = {field: {} for field in RULE_TYPES.values()}
@@ -200,36 +241,17 @@ def process_file(txt_path, *, skip_unsupported_types=()):
                     continue
                 # Existing TXT rules use whitespace-separated trailing comments.
                 line = TRAILING_COMMENT.split(line, maxsplit=1)[0].rstrip()
-                parts = [part.strip() for part in line.split(",")]
-                key = parts[0].upper()
-                # Keep GEOIP in the source TXT, but omit it from JSON and SRS.
-                if key == "GEOIP":
-                    continue
                 try:
-                    if key not in RULE_TYPES and key not in skipped_types:
-                        raise ValueError(f"unsupported rule type: {parts[0]}")
-                    if len(parts) < 2 or not parts[1]:
-                        raise ValueError("missing rule value")
-                    is_ip = key in ("IP-CIDR", "IP-CIDR6")
-                    if len(parts) != 2 and not (
-                        is_ip and len(parts) == 3 and parts[2].lower() == "no-resolve"
-                    ):
-                        raise ValueError("unexpected extra fields (only IP no-resolve is supported)")
-                    value = parts[1]
-                    if key in skipped_types:
-                        skipped[key] = skipped.get(key, 0) + 1
-                        continue
-                    if key != "PROCESS-NAME" and any(character.isspace() for character in value):
-                        raise ValueError("whitespace inside rule value")
-                    if is_ip:
-                        network = parse_ip_network(value, strict=False)
-                        expected_version = 6 if key == "IP-CIDR6" else 4
-                        if network.version != expected_version:
-                            raise ValueError(f"IP version does not match {key}")
-                        value = str(network)
-                    rules[RULE_TYPES[key]][value] = None
+                    parsed = parse_rule(line, skipped_types)
                 except ValueError as error:
                     raise ValueError(f"{txt_path}:{line_number}: {error}") from error
+                if parsed is None:
+                    continue
+                key, value = parsed
+                if key in skipped_types:
+                    skipped[key] = skipped.get(key, 0) + 1
+                else:
+                    rules[RULE_TYPES[key]][value] = None
     except UnicodeDecodeError as error:
         raise ValueError(f"{txt_path}: invalid UTF-8 input: {error.reason}") from error
     for key, count in skipped.items():
@@ -241,19 +263,38 @@ def plan_publication(outputs):
     """Check all targets and comparisons before replacing any published file."""
     planned = []
     for temporary, path, count in outputs:
-        # Inspect the entry itself so symlinks keep their comparison/replacement behavior.
+        # Validate the destination entry without following symlinks.
         try:
             mode = path.lstat().st_mode
         except FileNotFoundError:
-            pass
+            mode = 0
         else:
             if stat.S_ISDIR(mode):
                 raise IsADirectoryError(f"Output target is a directory: {path}")
             if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
                 raise ValueError(f"Output target is not a regular file or symbolic link: {path}")
-        unchanged = path.exists() and filecmp.cmp(path, temporary, shallow=False)
+        # Replace symlinks even if equal now: their targets may change during publication.
+        unchanged = stat.S_ISREG(mode) and filecmp.cmp(path, temporary, shallow=False)
         planned.append((temporary, path, count, unchanged))
     return planned
+
+
+def stage_rule_set(txt_path, output_dir, staging_dir, *, skip_unsupported_types=()):
+    """Build both formats for one category; rule data is released on return."""
+    rules = process_file(txt_path, skip_unsupported_types=skip_unsupported_types)
+    count = sum(map(len, rules.values()))
+    staged_json = staging_dir / f"{txt_path.stem}.json"
+    staged_srs = staging_dir / f"{txt_path.stem}.srs"
+    # Stream JSON to avoid keeping the complete text and UTF-8 byte copy in memory.
+    with staged_json.open("w", encoding="utf-8", newline="\n") as destination:
+        json.dump({"version": SRS_VERSION, "rules": rule_groups(rules)},
+                  destination, ensure_ascii=False, indent=2)
+        destination.write("\n")
+    staged_srs.write_bytes(encode_srs(rules))
+    return [
+        (staged_json, output_dir / staged_json.name, count),
+        (staged_srs, output_dir / staged_srs.name, count),
+    ]
 
 
 def convert_files(base_dir=BASE_DIR, output_dir=None, *, skip_unsupported_types=()):
@@ -265,21 +306,13 @@ def convert_files(base_dir=BASE_DIR, output_dir=None, *, skip_unsupported_types=
     # Validate and encode every input before publishing any output.
     # Stage files on disk so only one category and encoded output stay in memory.
     with tempfile.TemporaryDirectory(dir=output_dir, prefix=".rules-") as staging:
+        staging_dir = Path(staging)
         outputs = []
         for name in RULE_NAMES:
-            rules = process_file(base_dir / f"{name}.txt", skip_unsupported_types=skip_unsupported_types)
-            data = {"version": SRS_VERSION, "rules": rule_groups(rules)}
-            count = sum(map(len, rules.values()))
-            for extension in ("json", "srs"):
-                if extension == "json":
-                    content = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-                else:
-                    content = encode_srs(rules)
-                temporary = Path(staging) / f"{name}.{extension}"
-                temporary.write_bytes(content)
-                outputs.append((temporary, output_dir / temporary.name, count))
-                del content
-            del rules, data
+            outputs.extend(stage_rule_set(
+                base_dir / f"{name}.txt", output_dir, staging_dir,
+                skip_unsupported_types=skip_unsupported_types,
+            ))
         for temporary, path, count, unchanged in plan_publication(outputs):
             if unchanged:
                 print(f"{path.name}: {count} rules, unchanged")
@@ -293,7 +326,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rule-dir", type=Path, default=BASE_DIR)
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--skip-unsupported-type", action="append", default=[], choices=["USER-AGENT"],
+    parser.add_argument("--skip-unsupported-type", action="append", default=[], choices=sorted(SKIPPABLE_TYPES),
                         help="explicitly omit USER-AGENT rules with a warning; other unknown types still fail")
     args = parser.parse_args()
     try:
