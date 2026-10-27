@@ -5,9 +5,6 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { setTimeout: sleep } = require('node:timers/promises');
 
-// 自动清理未在配置中保留的直属 TXT 文件：true 启用，false 关闭。
-const CLEANUP_ENABLED = false;
-
 const DEFAULT_OPTIONS = Object.freeze({
   concurrency: 4,
   attempts: 3,
@@ -264,22 +261,6 @@ function assertSafeOutputs(config, outputDir, protectedPaths) {
   }
 }
 
-async function cleanupObsoleteFiles(config, outputDir, configFile, resolvedPaths) {
-  const { realOutputDir, protectedPaths } = resolvedPaths ?? await resolveFilePaths(outputDir, configFile);
-  const expectedFiles = new Set(Object.keys(config).map(name => fileKey(name + '.txt')));
-  let deleted = 0;
-  for (const entry of await fs.readdir(realOutputDir, { withFileTypes: true })) {
-    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.txt' ||
-        expectedFiles.has(fileKey(entry.name))) continue;
-    const output = path.join(realOutputDir, entry.name);
-    if (protectedPaths.has(fileKey(output))) continue;
-    await fs.unlink(output);
-    deleted++;
-    console.log('DELETED: ' + output);
-  }
-  return deleted;
-}
-
 // Count category users so shared sources download once and are released after last use.
 function createDownloadCache(categories) {
   const downloads = new Map();
@@ -322,23 +303,21 @@ async function main({
   configFile = path.join(DEFAULT_OUTPUT_DIR, 'merge.yaml'),
   outputDir = DEFAULT_OUTPUT_DIR,
   options = {},
-  cleanupEnabled = CLEANUP_ENABLED,
 } = {}) {
-  if (typeof cleanupEnabled !== 'boolean') throw new Error('Invalid option: cleanupEnabled; use true or false');
   const settings = resolveOptions(options);
   const config = await readConfig(configFile);
   await fs.mkdir(outputDir, { recursive: true });
   const resolvedPaths = await resolveFilePaths(outputDir, configFile);
   assertSafeOutputs(config, resolvedPaths.realOutputDir, resolvedPaths.protectedPaths);
 
-  // Deduplicate each category once; preserve the original configuration for cleanup.
+  // Deduplicate source URLs before building the shared download cache.
   const categories = Object.entries(config).map(([name, item]) => [
     name, { ...item, url: [...new Set(item.url)] },
   ]);
   const downloads = createDownloadCache(categories);
   await downloadSources(downloads, settings);
 
-  const summary = { updated: 0, unchanged: 0, skipped: 0, failed: 0, deleted: 0 };
+  const summary = { updated: 0, unchanged: 0, skipped: 0, failed: 0 };
   for (const [name, item] of categories) {
     try { summary[await generateRule(name, item, downloads, resolvedPaths.realOutputDir)]++; }
     catch (error) {
@@ -348,18 +327,7 @@ async function main({
       releaseDownloads(item, downloads);
     }
   }
-  try {
-    if (!cleanupEnabled) {
-      console.log('CLEANUP DISABLED: obsolete TXT files preserved');
-    } else if (summary.failed) {
-      console.warn('CLEANUP SKIPPED: generation failed; obsolete TXT files preserved');
-    } else {
-      summary.deleted = await cleanupObsoleteFiles(config, resolvedPaths.realOutputDir, configFile, resolvedPaths);
-    }
-  } finally {
-    // Keep completed generation results visible even when directory cleanup fails.
-    console.log('Summary:', summary);
-  }
+  console.log('Summary:', summary);
   return summary;
 }
 
@@ -372,4 +340,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseConfig, addRules, download, cleanupObsoleteFiles, main };
+module.exports = { parseConfig, addRules, download, main };
