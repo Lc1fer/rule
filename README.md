@@ -15,35 +15,7 @@
 
 TXT 文件只包含匹配规则，实际直连、代理或拦截行为由客户端指定的策略决定。`us.txt` 是分类名称，使用时需自行选择适合的节点或策略组。
 
-## 在 Surge 中使用
-
-将所需规则加入配置文件的 `[Rule]` 段。以下示例中的 `PROXY` 和 `AI` 需要替换为你已有的代理策略或策略组：
-
-```ini
-[Rule]
-RULE-SET,https://raw.githubusercontent.com/Lc1fer/rule/main/lan.txt,DIRECT
-RULE-SET,https://raw.githubusercontent.com/Lc1fer/rule/main/fix.txt,DIRECT
-RULE-SET,https://raw.githubusercontent.com/Lc1fer/rule/main/reject.txt,REJECT
-RULE-SET,https://raw.githubusercontent.com/Lc1fer/rule/main/us.txt,AI
-RULE-SET,https://raw.githubusercontent.com/Lc1fer/rule/main/direct.txt,DIRECT
-RULE-SET,https://raw.githubusercontent.com/Lc1fer/rule/main/proxy.txt,PROXY
-```
-
-规则按顺序匹配，请结合现有配置调整优先级，并将这些规则放在兜底规则之前。
-
-## 本地合并规则
-
-合并脚本使用 Node.js 内置模块，无需安装 npm 依赖。推荐使用与工作流一致的 Node.js 24，并确保能够访问配置中的上游地址。
-
-```bash
-git clone https://github.com/Lc1fer/rule.git
-cd rule
-node script/merge-rules.js
-```
-
-脚本默认读取仓库根目录的 `merge.yaml`，在根目录生成 `fix.txt`、`reject.txt`、`us.txt`、`proxy.txt` 和 `direct.txt`。默认路径以脚本位置为基准，不受执行命令时所在目录影响。
-
-### 自定义来源与规则
+## 自定义来源与规则
 
 编辑 `merge.yaml`，分类名称对应输出文件名。下面展示如何为现有的 `direct` 分类添加和移除规则；合并到原有配置时应保留需要的上游 URL：
 
