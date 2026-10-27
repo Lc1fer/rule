@@ -4,14 +4,14 @@ name: TXT-JSON-Binary
 on:
   workflow_dispatch:
   push:
-    branches: ['**']
+    branches: ['main']
     paths:
-      - 'Rule/direct.txt'
-      - 'Rule/fix.txt'
-      - 'Rule/proxy.txt'
-      - 'Rule/reject.txt'
-      - 'Script/convert_txt_to_json.py'
-      - 'Script/txt-json-binary.yml'
+      - 'direct.txt'
+      - 'fix.txt'
+      - 'proxy.txt'
+      - 'reject.txt'
+      - 'script/convert_txt_to_json.py'
+      - 'script/txt-json-binary.yml'
       - '.github/workflows/txt-json-binary.yml'
 
 permissions:
@@ -49,7 +49,7 @@ jobs:
           trap 'rm -rf -- "$build_dir"' EXIT
 
           # sing-box has no USER-AGENT equivalent; omission is explicit and logged.
-          python Script/convert_txt_to_json.py --skip-unsupported-type USER-AGENT --output-dir "$build_dir"
+          python script/convert_txt_to_json.py --skip-unsupported-type USER-AGENT --output-dir "$build_dir"
 
           for name in direct fix proxy reject; do
             test -s "$build_dir/$name.json"
@@ -58,8 +58,8 @@ jobs:
 
           # Publish outputs only after all eight files are generated successfully.
           for name in direct fix proxy reject; do
-            cp -- "$build_dir/$name.json" "Rule/$name.json"
-            cp -- "$build_dir/$name.srs" "Rule/$name.srs"
+            cp -- "$build_dir/$name.json" "$name.json"
+            cp -- "$build_dir/$name.srs" "$name.srs"
           done
 
       - name: Commit changed JSON and SRS together
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           for name in direct fix proxy reject; do
-            git add -- "Rule/$name.json" "Rule/$name.srs"
+            git add -- "$name.json" "$name.srs"
           done
 
           if git diff --cached --quiet; then

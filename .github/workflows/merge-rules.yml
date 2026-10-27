@@ -8,9 +8,10 @@ on:
   workflow_dispatch:
 
   push:
+    branches: ['main']
     paths:
-      - 'Rule/merge.yaml'
-      - 'Script/merge-rules.js'
+      - 'merge.yaml'
+      - 'script/merge-rules.js'
       - '.github/workflows/merge-rules.yml'
 
 permissions:
@@ -42,7 +43,7 @@ jobs:
       - name: Generate rules
         id: generate
         continue-on-error: true
-        run: node Script/merge-rules.js
+        run: node script/merge-rules.js
 
       - name: Commit changes
         shell: bash
@@ -52,8 +53,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # 仅暂存规则文本文件；没有匹配文件时也能正常结束。
-          mapfile -d '' rule_files < <(git ls-files --cached --others --exclude-standard -z -- ':(glob)Rule/*.txt')
+          # 仅暂存仓库根目录的规则文本文件；没有匹配文件时也能正常结束。
+          mapfile -d '' rule_files < <(git ls-files --cached --others --exclude-standard -z -- ':(top,glob)*.txt')
           if (( ${#rule_files[@]} == 0 )); then
             echo "No rule files found."
             exit 0

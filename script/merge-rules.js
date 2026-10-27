@@ -11,7 +11,7 @@ const CLEANUP_ENABLED = false;
 const OPTIONS = Object.freeze({ concurrency: 4, attempts: 3, timeoutMs: 60_000, retryMs: 2_000 });
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
-const DEFAULT_OUTPUT_DIR = path.resolve(__dirname, '..', 'Rule');
+const DEFAULT_OUTPUT_DIR = path.resolve(__dirname, '..');
 
 // Only category -> url / rules -> add / remove is supported.
 // Values must be unquoted, single-line strings; comments occupy their own lines.
