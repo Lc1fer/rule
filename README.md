@@ -65,8 +65,6 @@ python3 script/convert_txt_to_json.py \
 - 进程规则与域名 / IP 规则分组为或关系；IP 网段会规范化，重复项按首次出现顺序去重。
 - 全部输入校验及编码成功、输出预检通过后才发布结果；内容未变化时保留输出文件及修改时间。实际替换阶段的文件系统错误不会回滚已完成的替换。
 
-更多细节见 [TXT 转 JSON / SRS](script/convert_txt_to_json.md)。
-
 ## GitHub Actions
 
 ### 已启用：Merge Rules
@@ -100,7 +98,6 @@ python3 script/convert_txt_to_json.py \
 └── script/
     ├── merge-rules.js                # 下载、合并并生成 TXT
     ├── convert_txt_to_json.py        # TXT 转 JSON / SRS
-    ├── convert_txt_to_json.md        # 转换脚本详细说明
     └── boxjs.json                   # yuheng 脚本的 BoxJS 订阅配置
 ```
 
