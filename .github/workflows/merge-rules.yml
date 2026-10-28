@@ -11,7 +11,7 @@ on:
     branches: ['main']
     paths:
       - 'merge.yaml'
-      - 'script/merge-rules.js'
+      - 'scripts/merge-rules.js'
       - '.github/workflows/merge-rules.yml'
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
       - name: Generate rules
         id: generate
         continue-on-error: true
-        run: node script/merge-rules.js
+        run: node scripts/merge-rules.js
 
       - name: Commit changes
         shell: bash

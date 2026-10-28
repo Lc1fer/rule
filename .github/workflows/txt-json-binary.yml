@@ -39,7 +39,7 @@ jobs:
           trap 'rm -rf -- "$build_dir"' EXIT
 
           # sing-box has no USER-AGENT equivalent; omission is explicit and logged.
-          python script/convert_txt_to_json.py --skip-unsupported-type USER-AGENT --output-dir "$build_dir"
+          python scripts/convert_txt_to_json.py --skip-unsupported-type USER-AGENT --output-dir "$build_dir"
 
           for name in direct direct-fix proxy reject; do
             test -s "$build_dir/$name.json"
