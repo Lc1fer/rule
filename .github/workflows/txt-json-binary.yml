@@ -41,13 +41,13 @@ jobs:
           # sing-box has no USER-AGENT equivalent; omission is explicit and logged.
           python script/convert_txt_to_json.py --skip-unsupported-type USER-AGENT --output-dir "$build_dir"
 
-          for name in direct fix proxy reject; do
+          for name in direct direct-fix proxy reject; do
             test -s "$build_dir/$name.json"
             test -s "$build_dir/$name.srs"
           done
 
           # Publish outputs only after all eight files are generated successfully.
-          for name in direct fix proxy reject; do
+          for name in direct direct-fix proxy reject; do
             cp -- "$build_dir/$name.json" "$name.json"
             cp -- "$build_dir/$name.srs" "$name.srs"
           done
@@ -57,7 +57,7 @@ jobs:
           TARGET_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          for name in direct fix proxy reject; do
+          for name in direct direct-fix proxy reject; do
             git add -- "$name.json" "$name.srs"
           done
 

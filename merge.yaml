@@ -1,4 +1,4 @@
-fix:
+direct-fix:
   url:
     - https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Direct+.list
   rules:
