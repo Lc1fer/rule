@@ -2,7 +2,7 @@
 
 | 文件 | 用途与来源 | 订阅链接 |
 | --- | --- | --- |
-| [fix.txt](fix.txt) | 直连修正，来自 RuleGo 的 Direct+ | [Raw](https://raw.githubusercontent.com/Lc1fer/rule/main/fix.txt) |
+| [fix.txt](fix.txt) | 直连修正 | [Raw](https://raw.githubusercontent.com/Lc1fer/rule/main/fix.txt) |
 | [reject.txt](reject.txt) | 广告与追踪拦截 | [Raw](https://raw.githubusercontent.com/Lc1fer/rule/main/reject.txt) |
 | [us.txt](us.txt) | OpenAI、Anthropic 等 AI 服务，便于单独指定策略 | [Raw](https://raw.githubusercontent.com/Lc1fer/rule/main/us.txt) |
 | [proxy.txt](proxy.txt) | 代理与境外流媒体规则 | [Raw](https://raw.githubusercontent.com/Lc1fer/rule/main/proxy.txt) |
