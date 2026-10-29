@@ -66,7 +66,7 @@ function parseConfig(text) {
     if (current && ((section === 'url' && indent === 4) ||
         (section === 'rules' && ruleAction && indent === 6)) && line.startsWith('- ')) {
       const value = line.slice(2).trim();
-      if (!value || value.startsWith('#')) continue;
+      if (!value || value.startsWith('#')) fail('List items need a value; put comments on separate lines');
       if (/^["'|>\[\]{}&*!%@`]/.test(value) || /\s#|:\s/.test(value) || /^(?:null|true|false|~)$/i.test(value)) {
         fail('Unsupported YAML value; use an unquoted single-line value and separate comment lines');
       }
@@ -94,13 +94,17 @@ function addRules(target, text) {
   return target;
 }
 
-function resolveOptions(options = {}) {
+function assertKnownOptions(options, supportedKeys) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     throw new Error('Invalid options: use an object');
   }
   for (const key of Object.keys(options)) {
-    if (!Object.hasOwn(DEFAULT_OPTIONS, key)) throw new Error(`Unknown option: ${key}`);
+    if (!supportedKeys.includes(key)) throw new Error(`Unknown option: ${key}`);
   }
+}
+
+function resolveOptions(options = {}) {
+  assertKnownOptions(options, Object.keys(DEFAULT_OPTIONS));
   const settings = { ...DEFAULT_OPTIONS, ...options };
   for (const key of Object.keys(DEFAULT_OPTIONS)) {
     if (!Number.isSafeInteger(settings[key]) || settings[key] < 1 ||
@@ -141,6 +145,12 @@ async function fetchRules(url, timeoutMs) {
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
     catch (cause) { throw new DownloadError('Response is not valid UTF-8', { cause }); }
     return addRules(new Set(), text);
+  } catch (cause) {
+    // HTTP errors abort their response body too; keep their original status/retry policy.
+    if (controller.signal.aborted && !(cause instanceof DownloadError)) {
+      throw new DownloadError(`Request timed out after ${timeoutMs} ms`, { retryable: true, cause });
+    }
+    throw cause;
   } finally {
     clearTimeout(timer);
   }
@@ -195,19 +205,38 @@ async function atomicWrite(output, content) {
 }
 
 function collectRules(config, downloads) {
-  let rules = new Set();
-  for (const url of config.url) {
+  const sources = config.url.map(url => {
     const result = downloads.get(url);
     if (result.error) {
       throw new Error(`${url}: ${result.error.message}`, { cause: result.error });
     }
-    // The last category can take ownership; sources still used later stay unchanged.
-    if (!rules.size && result.remainingUsers === 1) rules = result.rules;
-    else for (const rule of result.rules) rules.add(rule);
+    return result;
+  });
+  let rules = new Set();
+  // Reuse the largest exclusively owned set to minimize copying; shared sources stay intact.
+  for (const source of sources) {
+    if (source.remainingUsers === 1 && source.rules.size > rules.size) rules = source.rules;
+  }
+  for (const source of sources) {
+    if (source.rules !== rules) for (const rule of source.rules) rules.add(rule);
   }
   // Configuration values are already single-line, trimmed rules from parseConfig.
   for (const rule of config.rules.add) rules.add(rule);
   return rules;
+}
+
+async function outputMatchesRules(output, rules) {
+  let info;
+  try { info = await fs.lstat(output); }
+  catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+  // A link can point to another output that changes later in this run. Replace the link itself.
+  if (info.isSymbolicLink()) return false;
+  if (!info.isFile()) throw new Error(`Output must be a regular file or symbolic link: ${output}`);
+  const oldRules = addRules(new Set(), await fs.readFile(output, 'utf8'));
+  return oldRules.size === rules.size && oldRules.isSupersetOf(rules);
 }
 
 async function generateRule(name, config, downloads, outputDir) {
@@ -220,15 +249,9 @@ async function generateRule(name, config, downloads, outputDir) {
   }
   // Apply removals last so they override both downloaded and added rules.
   for (const rule of config.rules.remove) rules.delete(rule);
-  let oldText;
-  try { oldText = await fs.readFile(output, 'utf8'); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (oldText !== undefined) {
-    const oldRules = addRules(new Set(), oldText);
-    if (oldRules.size === rules.size && oldRules.isSupersetOf(rules)) {
-      console.log(`UNCHANGED: ${output}`);
-      return 'unchanged';
-    }
+  if (await outputMatchesRules(output, rules)) {
+    console.log(`UNCHANGED: ${output}`);
+    return 'unchanged';
   }
   // Allocate and sort only when the output actually needs to change.
   const sorted = [...rules].sort();
@@ -299,11 +322,13 @@ async function readConfig(configFile) {
   }
 }
 
-async function main({
-  configFile = path.join(DEFAULT_OUTPUT_DIR, 'merge.yaml'),
-  outputDir = DEFAULT_OUTPUT_DIR,
-  options = {},
-} = {}) {
+async function main(runOptions = {}) {
+  assertKnownOptions(runOptions, ['configFile', 'outputDir', 'options']);
+  const {
+    configFile = path.join(DEFAULT_OUTPUT_DIR, 'merge.yaml'),
+    outputDir = DEFAULT_OUTPUT_DIR,
+    options = {},
+  } = runOptions;
   const settings = resolveOptions(options);
   const config = await readConfig(configFile);
   await fs.mkdir(outputDir, { recursive: true });
