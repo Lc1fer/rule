@@ -34,34 +34,38 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Convert four TXT files to JSON and SRS
+      - name: Convert TXT rules to JSON and SRS
         run: |
           set -euo pipefail
-          build_dir="$(mktemp -d)"
-          trap 'rm -rf -- "$build_dir"' EXIT
 
-          # sing-box has no USER-AGENT equivalent; omission is explicit and logged.
-          python scripts/convert_txt_to_json.py --skip-unsupported-type USER-AGENT --output-dir "$build_dir"
-
-          for name in direct direct-fix proxy reject; do
-            test -s "$build_dir/$name.json"
-            test -s "$build_dir/$name.srs"
-          done
-
-          # Publish outputs only after all eight files are generated successfully.
-          for name in direct direct-fix proxy reject; do
-            cp -- "$build_dir/$name.json" "$name.json"
-            cp -- "$build_dir/$name.srs" "$name.srs"
-          done
+          # 由转换器统一负责暂存、全量预检和原子替换，避免 cp 跟随输出软链接。
+          # sing-box 无 USER-AGENT 对应字段，显式跳过并记录数量。
+          python scripts/convert_txt_to_json.py --skip-unsupported-type USER-AGENT
 
       - name: Commit changed JSON and SRS together
         env:
           TARGET_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          for name in direct direct-fix proxy reject; do
-            git add -- "$name.json" "$name.srs"
-          done
+
+          # 从转换器读取唯一的分类清单；全部产物有效后才允许暂存。
+          output_list="$(mktemp)"
+          trap 'rm -f -- "$output_list"' EXIT
+          python - <<'PY' > "$output_list"
+          import sys
+          from pathlib import Path
+          from runpy import run_path
+
+          rule_names = run_path("scripts/convert_txt_to_json.py")["RULE_NAMES"]
+          for name in rule_names:
+              for extension in ("json", "srs"):
+                  output = Path(f"{name}.{extension}")
+                  if output.is_symlink() or not output.is_file() or output.stat().st_size == 0:
+                      raise SystemExit(f"Missing or invalid rule output: {output}")
+                  sys.stdout.buffer.write(str(output).encode("utf-8") + b"\0")
+          PY
+          mapfile -d '' -t output_files < "$output_list"
+          git --literal-pathspecs add -- "${output_files[@]}"
 
           if git diff --cached --quiet; then
             echo "No rule output changes."
