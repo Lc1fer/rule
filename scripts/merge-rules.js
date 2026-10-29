@@ -123,6 +123,21 @@ class DownloadError extends Error {
   }
 }
 
+function parseDownloadedRules(bytes) {
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch (cause) { throw new DownloadError('Response is not valid UTF-8', { cause }); }
+  const rules = addRules(new Set(), text);
+  // Error pages may arrive with HTTP 200 and even a text/plain Content-Type.
+  // Check the content without maintaining a whitelist of Surge rule types.
+  for (const rule of rules) {
+    if (/^[<{\[]/.test(rule)) {
+      throw new DownloadError('Expected plain-text rules, received HTML, XML or JSON content');
+    }
+  }
+  return rules;
+}
+
 // Keep the timeout active until the body has been fully read, not just the headers.
 async function fetchRules(url, timeoutMs) {
   const controller = new AbortController();
@@ -132,7 +147,8 @@ async function fetchRules(url, timeoutMs) {
       redirect: 'follow', signal: controller.signal,
       headers: { 'User-Agent': 'GitHub-Actions-Rule-Merger' },
     });
-    if (!response.ok) {
+    // No Range header was sent: a partial response cannot replace a complete rule set.
+    if (!response.ok || response.status === 206) {
       // A stalled cancellation must not block this worker or the next retry.
       try { response.body?.cancel().catch(() => {}); } catch {}
       controller.abort();
@@ -140,11 +156,7 @@ async function fetchRules(url, timeoutMs) {
         retryable: RETRYABLE_HTTP_STATUSES.has(response.status) || response.status >= 500,
       });
     }
-    const bytes = await response.arrayBuffer();
-    let text;
-    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
-    catch (cause) { throw new DownloadError('Response is not valid UTF-8', { cause }); }
-    return addRules(new Set(), text);
+    return parseDownloadedRules(await response.arrayBuffer());
   } catch (cause) {
     // HTTP errors abort their response body too; keep their original status/retry policy.
     if (controller.signal.aborted && !(cause instanceof DownloadError)) {
@@ -212,6 +224,14 @@ function collectRules(config, downloads) {
     }
     return result;
   });
+  // Preserve the old category if only some sources have gone empty. Entirely empty
+  // categories are still skipped by generateRule; explicit removals can clear a set.
+  if (config.rules.add.length || sources.some(source => source.rules.size)) {
+    const emptySourceIndex = sources.findIndex(source => source.rules.size === 0);
+    if (emptySourceIndex !== -1) {
+      throw new Error(`Empty rule source: ${config.url[emptySourceIndex]}`);
+    }
+  }
   let rules = new Set();
   // Reuse the largest exclusively owned set to minimize copying; shared sources stay intact.
   for (const source of sources) {
