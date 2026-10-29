@@ -7,9 +7,11 @@ on:
 permissions:
   contents: write
 
+# 与 Merge Rules 共用分支写入队列。
 concurrency:
-  group: txt-json-binary-${{ github.ref }}
+  group: rule-updates-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   convert_and_compile:

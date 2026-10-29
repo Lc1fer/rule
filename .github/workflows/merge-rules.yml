@@ -17,24 +17,30 @@ on:
 permissions:
   contents: write
 
-# 同一分支的工作流串行执行，避免同时提交。
+# 与 TXT-JSON-Binary 共用分支写入队列，避免同时提交。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: rule-updates-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   update-rules:
+    if: github.ref_type == 'branch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref_name }}
+          # 排队执行时读取所选分支的最新内容。
+          ref: ${{ github.ref }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           package-manager-cache: false
@@ -46,33 +52,36 @@ jobs:
         run: node scripts/merge-rules.js
 
       - name: Commit changes
-        shell: bash
+        env:
+          TARGET_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # 仅暂存仓库根目录的规则文本文件；没有匹配文件时也能正常结束。
-          mapfile -d '' rule_files < <(git ls-files --cached --others --exclude-standard -z -- ':(top,glob)*.txt')
+          # 独立执行列表命令，确保失败会中止流程；NUL 分隔保留特殊文件名。
+          rule_list="$(mktemp)"
+          trap 'rm -f -- "$rule_list"' EXIT
+          git ls-files --cached --others --exclude-standard -z -- ':(top,glob)*.txt' > "$rule_list"
+          mapfile -d '' -t rule_files < "$rule_list"
           if (( ${#rule_files[@]} == 0 )); then
             echo "No rule files found."
             exit 0
           fi
-          git add -- "${rule_files[@]}"
+          git --literal-pathspecs add -- "${rule_files[@]}"
 
           if git diff --cached --quiet; then
             echo "No rule content changes."
             exit 0
           fi
 
-          git commit -m "Merge rules"
-          git push
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Merge rules'
+          # 远端分支已推进时安全失败，避免提交基于旧输入生成的规则。
+          git push origin "HEAD:$TARGET_REF"
 
       # continue-on-error 不应掩盖生成失败；提交后恢复失败状态。
       - name: Report generation failure
         if: ${{ !cancelled() && steps.generate.outcome == 'failure' }}
-        shell: bash
         run: |
           echo "::error::Rule generation failed. See the generation and commit steps for details."
           exit 1
