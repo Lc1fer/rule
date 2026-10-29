@@ -255,7 +255,12 @@ async function outputMatchesRules(output, rules) {
   // A link can point to another output that changes later in this run. Replace the link itself.
   if (info.isSymbolicLink()) return false;
   if (!info.isFile()) throw new Error(`Output must be a regular file or symbolic link: ${output}`);
-  const oldRules = addRules(new Set(), await fs.readFile(output, 'utf8'));
+  const bytes = await fs.readFile(output);
+  let text;
+  // Repair invalid UTF-8 instead of treating decoding replacement characters as rules.
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch { return false; }
+  const oldRules = addRules(new Set(), text);
   return oldRules.size === rules.size && oldRules.isSupersetOf(rules);
 }
 
