@@ -8,7 +8,7 @@ const { setTimeout: sleep } = require('node:timers/promises');
 // 规则配置：分类名对应输出文件名，url 为上游来源。
 // rules.add / rules.remove 用于手动增删规则；remove 最后生效。
 const RULE_SETS = {
-  'direct-fix': {
+  override: {
     url: [
       'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Direct+.list',
     ],

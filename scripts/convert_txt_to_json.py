@@ -13,7 +13,7 @@ import tempfile
 import zlib
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-RULE_NAMES = ("direct", "direct-fix", "proxy", "reject")
+RULE_NAMES = ("direct", "override", "proxy", "reject")
 RULE_TYPES = {
     "DOMAIN": "domain",
     "DOMAIN-SUFFIX": "domain_suffix",
