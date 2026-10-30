@@ -5,6 +5,49 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { setTimeout: sleep } = require('node:timers/promises');
 
+// 规则配置：分类名对应输出文件名，url 为上游来源。
+// rules.add / rules.remove 用于手动增删规则；remove 最后生效。
+const RULE_SETS = {
+  'direct-fix': {
+    url: [
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Direct+.list',
+    ],
+    rules: { add: [], remove: [] },
+  },
+  reject: {
+    url: [
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Extra/Reject/Advertising.list',
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Extra/Reject/Tracking.list',
+    ],
+    rules: { add: [], remove: [] },
+  },
+  us: {
+    url: [
+      // 'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Extra/PayPal.list',
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Extra/GenAI/OpenAI.list',
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Extra/GenAI/Anthropic.list',
+    ],
+    rules: { add: [], remove: [] },
+  },
+  proxy: {
+    url: [
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Extra/Streaming/!CN.list',
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Proxy.list',
+    ],
+    rules: { add: [], remove: [] },
+  },
+  direct: {
+    url: [
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Direct.list',
+      'https://raw.githubusercontent.com/ConnersHua/RuleGo/master/Surge/Ruleset/Extra/Apple/Apple.list',
+      'https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/ByteDance/ByteDance.list',
+      'https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Speedtest/Speedtest.list',
+      'https://raw.githubusercontent.com/Lc1fer/rule/main/lan.txt',
+    ],
+    rules: { add: [], remove: [] },
+  },
+};
+
 const DEFAULT_OPTIONS = Object.freeze({
   concurrency: 4,
   attempts: 3,
@@ -16,74 +59,51 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
 
 const DEFAULT_OUTPUT_DIR = path.resolve(__dirname, '..');
 
-// Only category -> url / rules -> add / remove is supported.
-// Values must be unquoted, single-line strings; comments occupy their own lines.
-function parseConfig(text) {
-  const result = Object.create(null);
-  const names = new Set();
-  let current = null;
-  let section = null;
-  let ruleAction = null;
-  let sections = new Set();
-  let ruleActions = new Set();
-  for (const [index, raw] of text.replace(/^\uFEFF/, '').split(/\r\n|\n|\r/).entries()) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const fail = message => { throw new Error(`Line ${index + 1}: ${message}`); };
-    if (/^\s*\t/.test(raw)) fail('Use spaces for indentation');
-    const indent = raw.length - raw.trimStart().length;
-    if (indent === 0 && line.endsWith(':')) {
-      const name = line.slice(0, -1).trim();
-      if (!/^[A-Za-z0-9._+-]+$/.test(name) || name.endsWith('.') ||
-          /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) {
-        fail(`Invalid output name: ${name}`);
-      }
-      const key = name.toLowerCase();
-      if (names.has(key)) fail(`Duplicate output name: ${name}`);
-      names.add(key);
-      current = result[name] = { url: [], rules: { add: [], remove: [] } };
-      sections = new Set();
-      ruleActions = new Set();
-      section = null;
-      ruleAction = null;
-      continue;
+function normalizeList(values, label) {
+  if (!Array.isArray(values)) throw new Error(`${label}: use an array`);
+  return [...new Set(Array.from(values, value => {
+    if (typeof value !== 'string' || /[\r\n]/.test(value) || !value.trim() || value.trimStart().startsWith('#')) {
+      throw new Error(`${label}: items must be nonempty, single-line strings; use JavaScript comments`);
     }
-    const match = indent === 2 && line.match(/^(url|rules):\s*(\[\s*\])?$/);
-    if (current && match) {
-      if (sections.has(match[1])) fail(`Duplicate section: ${match[1]}`);
-      sections.add(match[1]);
-      section = match[2] ? null : match[1];
-      ruleAction = null;
-      continue;
-    }
-    const actionMatch = indent === 4 && line.match(/^(add|remove):\s*(\[\s*\])?$/);
-    if (current && section === 'rules' && actionMatch) {
-      if (ruleActions.has(actionMatch[1])) fail(`Duplicate rule action: ${actionMatch[1]}`);
-      ruleActions.add(actionMatch[1]);
-      ruleAction = actionMatch[2] ? null : actionMatch[1];
-      continue;
-    }
-    if (current && ((section === 'url' && indent === 4) ||
-        (section === 'rules' && ruleAction && indent === 6)) && line.startsWith('- ')) {
-      const value = line.slice(2).trim();
-      if (!value || value.startsWith('#')) fail('List items need a value; put comments on separate lines');
-      if (/^["'|>\[\]{}&*!%@`]/.test(value) || /\s#|:\s/.test(value) || /^(?:null|true|false|~)$/i.test(value)) {
-        fail('Unsupported YAML value; use an unquoted single-line value and separate comment lines');
-      }
-      if (section === 'url') {
-        let parsed;
-        try { parsed = new URL(value); } catch { fail(`Invalid URL: ${value}`); }
-        if (!['http:', 'https:'].includes(parsed.protocol)) fail('URL must use HTTP or HTTPS');
-        if (parsed.username || parsed.password) fail('URL credentials are not supported');
-      }
-      if (section === 'url') current.url.push(value);
-      else current.rules[ruleAction].push(value);
-      continue;
-    }
-    fail(`Unsupported syntax: ${line}`);
+    return value.trim();
+  }))];
+}
+
+function normalizeConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('Invalid rule configuration: use an object');
   }
-  if (!names.size) throw new Error('No rule categories found');
-  return result;
+  const categories = Object.entries(config);
+  if (!categories.length) throw new Error('No rule categories found');
+  const names = new Set();
+  return categories.map(([name, item]) => {
+    if (!/^[A-Za-z0-9._+-]+$/.test(name) || name.endsWith('.') ||
+        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) {
+      throw new Error(`Invalid output name: ${name}`);
+    }
+    const key = name.toLowerCase();
+    if (names.has(key)) throw new Error(`Duplicate output name: ${name}`);
+    names.add(key);
+    assertKnownOptions(item, ['url', 'rules'], name);
+    const { url = [], rules = {} } = item;
+    assertKnownOptions(rules, ['add', 'remove'], `${name}.rules`);
+    const { add = [], remove = [] } = rules;
+    const urls = normalizeList(url, `${name}.url`);
+    for (const value of urls) {
+      let parsed;
+      try { parsed = new URL(value); } catch { throw new Error(`${name}: Invalid URL: ${value}`); }
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(`${name}: URL must use HTTP or HTTPS`);
+      if (parsed.username || parsed.password) throw new Error(`${name}: URL credentials are not supported`);
+    }
+    // Copy every array so repeated runs never mutate the editable configuration.
+    return [name, {
+      url: urls,
+      rules: {
+        add: normalizeList(add, `${name}.rules.add`),
+        remove: normalizeList(remove, `${name}.rules.remove`),
+      },
+    }];
+  });
 }
 
 function addRules(target, text) {
@@ -94,12 +114,12 @@ function addRules(target, text) {
   return target;
 }
 
-function assertKnownOptions(options, supportedKeys) {
+function assertKnownOptions(options, supportedKeys, label = 'options') {
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
-    throw new Error('Invalid options: use an object');
+    throw new Error(`Invalid ${label}: use an object`);
   }
   for (const key of Object.keys(options)) {
-    if (!supportedKeys.includes(key)) throw new Error(`Unknown option: ${key}`);
+    if (!supportedKeys.includes(key)) throw new Error(`Unknown option in ${label}: ${key}`);
   }
 }
 
@@ -240,7 +260,7 @@ function collectRules(config, downloads) {
   for (const source of sources) {
     if (source.rules !== rules) for (const rule of source.rules) rules.add(rule);
   }
-  // Configuration values are already single-line, trimmed rules from parseConfig.
+  // Configuration values are already single-line, trimmed rules from normalizeConfig.
   for (const rule of config.rules.add) rules.add(rule);
   return rules;
 }
@@ -285,30 +305,6 @@ async function generateRule(name, config, downloads, outputDir) {
   return 'updated';
 }
 
-// Windows paths are case-insensitive; Linux paths must match exactly.
-function fileKey(value) {
-  return process.platform === 'win32' ? value.toLowerCase() : value;
-}
-
-async function resolveFilePaths(outputDir, configFile) {
-  const [realOutputDir, realConfigFile, realConfigDir] = await Promise.all([
-    fs.realpath(outputDir), fs.realpath(configFile), fs.realpath(path.dirname(path.resolve(configFile))),
-  ]);
-  // Protect both a configuration symlink and its target, including directory aliases.
-  const protectedPaths = new Set([
-    path.resolve(configFile), realConfigFile, path.join(realConfigDir, path.basename(configFile)),
-  ].map(fileKey));
-  return { realOutputDir, protectedPaths };
-}
-
-function assertSafeOutputs(config, outputDir, protectedPaths) {
-  for (const name of Object.keys(config)) {
-    if (protectedPaths.has(fileKey(path.join(outputDir, `${name}.txt`)))) {
-      throw new Error(`Output would overwrite configuration: ${name}.txt`);
-    }
-  }
-}
-
 // Count category users so shared sources download once and are released after last use.
 function createDownloadCache(categories) {
   const downloads = new Map();
@@ -338,38 +334,24 @@ function releaseDownloads(config, downloads) {
   }
 }
 
-async function readConfig(configFile) {
-  const bytes = await fs.readFile(configFile);
-  try {
-    return parseConfig(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } catch (cause) {
-    throw new Error(`${configFile}: ${cause.message}`, { cause });
-  }
-}
-
 async function main(runOptions = {}) {
-  assertKnownOptions(runOptions, ['configFile', 'outputDir', 'options']);
+  assertKnownOptions(runOptions, ['config', 'outputDir', 'options']);
   const {
-    configFile = path.join(DEFAULT_OUTPUT_DIR, 'merge.yaml'),
+    config = RULE_SETS,
     outputDir = DEFAULT_OUTPUT_DIR,
     options = {},
   } = runOptions;
   const settings = resolveOptions(options);
-  const config = await readConfig(configFile);
+  const categories = normalizeConfig(config);
   await fs.mkdir(outputDir, { recursive: true });
-  const resolvedPaths = await resolveFilePaths(outputDir, configFile);
-  assertSafeOutputs(config, resolvedPaths.realOutputDir, resolvedPaths.protectedPaths);
+  const realOutputDir = await fs.realpath(outputDir);
 
-  // Deduplicate source URLs before building the shared download cache.
-  const categories = Object.entries(config).map(([name, item]) => [
-    name, { ...item, url: [...new Set(item.url)] },
-  ]);
   const downloads = createDownloadCache(categories);
   await downloadSources(downloads, settings);
 
   const summary = { updated: 0, unchanged: 0, skipped: 0, failed: 0 };
   for (const [name, item] of categories) {
-    try { summary[await generateRule(name, item, downloads, resolvedPaths.realOutputDir)]++; }
+    try { summary[await generateRule(name, item, downloads, realOutputDir)]++; }
     catch (error) {
       summary.failed++;
       console.error(`FAILED: ${name}: ${error.message}; original file preserved`);
@@ -390,4 +372,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseConfig, addRules, download, main };
+module.exports = { RULE_SETS, normalizeConfig, addRules, download, main };
