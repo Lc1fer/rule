@@ -44,7 +44,14 @@ const RULE_SETS = {
       'https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Speedtest/Speedtest.list',
       'https://raw.githubusercontent.com/Lc1fer/rule/main/lan.txt',
     ],
-    rules: { add: [], remove: [] },
+    rules: { 
+	  add: [
+		'PROCESS-NAME,ms-teams.exe'
+	  ], 
+	  remove: [
+	  
+	  ] 
+		},
   },
 };
 
