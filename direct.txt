@@ -1,4 +1,4 @@
-# 更新时间：2026-10-13 16:11
+# 更新时间：2026-11-24 13:12
 
 DOMAIN,download.jetbrains.com
 DOMAIN,download.microsoft.com
@@ -445,5 +445,6 @@ IP-CIDR6,fc00::/7,no-resolve
 IP-CIDR6,fe80::/10,no-resolve
 IP-CIDR6,ff00::/8,no-resolve
 PROCESS-NAME,com.zhiliaoapp.musically
+PROCESS-NAME,ms-teams.exe
 USER-AGENT,SpeedTest*
 USER-AGENT,TikTok*
