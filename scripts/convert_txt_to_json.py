@@ -75,18 +75,6 @@ def encode_domain_matcher(domains, suffixes):
     encoded_keys = sorted(key[::-1].encode("utf-8") for key in keys)
     del keys, subdomains, suffixes
 
-    # None marks a terminal node; integer keys are UTF-8 edge labels.
-    trie = {}
-    for key in encoded_keys:
-        node = trie
-        for label in key:
-            child = node.get(label)
-            if child is None:
-                child = node[label] = {}
-            node = child
-        node[None] = True
-    del encoded_keys
-
     leaves, bitmap, labels = [], [], bytearray()
 
     def set_bit(words, index):
@@ -94,26 +82,29 @@ def encode_domain_matcher(domains, suffixes):
             words.append(0)
         words[index // 64] |= 1 << (index % 64)
 
-    pending = deque([trie])
-    del trie
+    # A range contains sorted keys sharing a prefix of `depth` bytes.
+    # Build the breadth-first layout directly, without a dict for every trie node.
+    pending = deque([(0, len(encoded_keys), 0)])
     node_id = bitmap_index = 0
     while pending:
-        node = pending.popleft()
-        if None in node:
+        start, end, depth = pending.popleft()
+        # An exact-prefix key sorts before its descendants and marks this node's leaf.
+        if start < end and len(encoded_keys[start]) == depth:
             set_bit(leaves, node_id)
-        # Sorted input keys establish ascending child insertion order once,
-        # avoiding a separate sort at every trie node.
-        for label, child in node.items():
-            if label is None:
-                continue
+            start += 1
+        while start < end:
+            label = encoded_keys[start][depth]
+            next_start = start + 1
+            while next_start < end and encoded_keys[next_start][depth] == label:
+                next_start += 1
             labels.append(label)
-            pending.append(child)
+            pending.append((start, next_start, depth + 1))
             bitmap_index += 1
+            start = next_start
         set_bit(bitmap, bitmap_index)
         bitmap_index += 1
         node_id += 1
-        # The queue now owns the children; release the visited node's edges.
-        node.clear()
+    del encoded_keys
 
     # SRS includes leaf words for all nodes, even when the final words are zero.
     leaves.extend([0] * ((node_id + 63) // 64 - len(leaves)))

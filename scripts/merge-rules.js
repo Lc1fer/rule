@@ -44,14 +44,7 @@ const RULE_SETS = {
       'https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Speedtest/Speedtest.list',
       'https://raw.githubusercontent.com/Lc1fer/rule/main/lan.txt',
     ],
-    rules: { 
-	  add: [
-		'PROCESS-NAME,ms-teams.exe'
-	  ], 
-	  remove: [
-	  
-	  ] 
-	},
+    rules: { add: ['PROCESS-NAME,ms-teams.exe'], remove: [] },
   },
 };
 
@@ -66,10 +59,14 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
 
 const DEFAULT_OUTPUT_DIR = path.resolve(__dirname, '..');
 
+function isCommentLine(line) {
+  return /^(?:#|\/\/|;)/.test(line);
+}
+
 function normalizeList(values, label) {
   if (!Array.isArray(values)) throw new Error(`${label}: use an array`);
   return [...new Set(Array.from(values, value => {
-    if (typeof value !== 'string' || /[\r\n]/.test(value) || !value.trim() || value.trimStart().startsWith('#')) {
+    if (typeof value !== 'string' || /[\r\n]/.test(value) || !value.trim() || isCommentLine(value.trimStart())) {
       throw new Error(`${label}: items must be nonempty, single-line strings; use JavaScript comments`);
     }
     return value.trim();
@@ -116,7 +113,7 @@ function normalizeConfig(config) {
 function addRules(target, text) {
   for (const raw of text.split(/\r\n|\n|\r/)) {
     const line = raw.trim();
-    if (line && !line.startsWith('#')) target.add(line);
+    if (line && !isCommentLine(line)) target.add(line);
   }
   return target;
 }
@@ -160,6 +157,12 @@ function parseDownloadedRules(bytes) {
   for (const rule of rules) {
     if (/^[<{\[]/.test(rule)) {
       throw new DownloadError('Expected plain-text rules, received HTML, XML or JSON content');
+    }
+    // Validate the structure, preserving unknown and parameterless rule types.
+    // Ignore trailing comments for validation only; retain the original rule line.
+    const content = rule.split(/\s(?:#|\/\/|;)/, 1)[0].trimEnd();
+    if (!/^[A-Za-z][\w-]*(?:\s*,\s*\S.*)?$/s.test(content)) {
+      throw new DownloadError(`Expected rule-set lines, received malformed plain-text content: ${JSON.stringify(content.slice(0, 80))}`);
     }
   }
   return rules;
